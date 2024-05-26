@@ -145,7 +145,7 @@ def fetch_packages() -> [str]:
 
 def check_globals(package_dependencies):
     # Checks for unused global dependecy
-    threshold = 1
+    threshold = 2
 
     global_deps = []
     specific_deps = []

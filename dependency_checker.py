@@ -7,8 +7,8 @@
 
     This script ensure that:
         Every dependecy used by 2 or more packages are a global dependencies
-        There is not unused global dependencies
-        Every dependecy of every package is used at least one time
+        There is no unused global dependencies
+        Every dependecy of every package is used at least once
 
     Requirements:
         rg (https://github.com/BurntSushi/ripgrep)

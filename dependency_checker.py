@@ -1,14 +1,12 @@
 """.
-    
+    Global dependency: the ones in root/cargo.toml
 
-    global dependency: the ones in root/cargo.toml
-
-    conflict: a global dependecy that is also imported specificly by a package
+    Conflict: a global dependency that is also imported specifically by a package
 
     This script ensure that:
-        Every dependecy used by 2 or more packages are a global dependencies
+        Every dependency used by 2 or more packages are a global dependencies
         There is no unused global dependencies
-        Every dependecy of every package is used at least once
+        Every dependency of every package is used at least once
 
     Requirements:
         rg (https://github.com/BurntSushi/ripgrep)
@@ -17,232 +15,152 @@
 """
 
 import os
-from threading import Thread
 import subprocess
+from typing import List, Tuple
 
 
 class Dependencies:
-    def __init__(self, package):
-        self.package = package
-        self.specifics = []
-        self.globals = []
+    def __init__(self, package: str) -> None:
+        self.package: str = package
+        self.specifics: List[str] = []
+        self.globals: List[str] = []
 
         self.fetch()
 
-    def __str__(self):
-        if self.package == ".":
-            return "root"
-        return self.package
+    def __str__(self) -> str:
+        return "root" if self.package == "." else self.package
 
-    def add_specific(self, dep_name):
+    def add_specific(self, dep_name: str) -> None:
         self.specifics.append(dep_name)
 
-    def add_global(self, dep_name):
+    def add_global(self, dep_name: str) -> None:
         self.globals.append(dep_name)
 
-    def get_specifics(self):
+    def get_specifics(self) -> List[str]:
         return self.specifics
 
-    def get_globals(self):
+    def get_globals(self) -> List[str]:
         return self.globals
 
-    def get_all(self):
+    def get_all(self) -> List[str]:
         return self.specifics + self.globals
 
-    def fetch(self):
-        cargo_toml = f"{self.package}/cargo.toml"
+    def fetch(self) -> None:
+        cargo_toml: str = os.path.join(self.package, "cargo.toml")
+        try:
+            with open(cargo_toml, "r") as f:
+                found_dependencies: bool = False
 
-        with open(cargo_toml, "r") as f:
-            found_dependencies = False
+                for line in f:
+                    line: str = line.replace(" ", "").replace("\n", "")
+                    if not line:
+                        continue
 
-            for line in f:
-                line = line.replace(" ", "").replace("\n", "")
-                if line == "":
-                    continue
+                    if line.startswith("["):
+                        found_dependencies = line.endswith("dependencies]")
+                        continue
 
-                if line.startswith("["):
-                    if line.endswith("dependencies]"):
-                        found_dependencies = True
+                    if line.startswith("#") or not found_dependencies:
+                        continue
+
+                    raw_dep_name: str = line.split(".")[0].split("=")[0]
+                    if ".workspace=true" in line:
+                        self.add_global(raw_dep_name)
                     else:
-                        found_dependencies = False
-                    continue
-
-                if line.startswith("#"):
-                    continue
-
-                if not found_dependencies:
-                    continue
-
-                raw_dep_name = line.split(".")[0].split("=")[0]
-
-                # if raw_dep_name == "shared":
-                # continue
-
-                if ".workspace=true" in line:
-                    self.add_global(raw_dep_name)
-                else:
-                    self.add_specific(raw_dep_name)
-
-    def check_unused(self):
-        import threading
-
-        threads = []
-        results = {}
-
-        for dep in self.get_all():
-            results[dep] = None
-            t = threading.Thread(
-                target=check_unused_thread_fn, args=(dep, self.package, results)
-            )
-            t.start()
-
-            threads.append(t)
-
-        return threads, results
+                        self.add_specific(raw_dep_name)
+        except FileNotFoundError:
+            print(f"File {cargo_toml} not found.")
+        except Exception as e:
+            print(f"Error reading {cargo_toml}: {e}")
 
 
-def check_unused_thread_fn(dep, package, results):
-    dep_ = dep.replace("-", "_")
-
-    s1 = f"{dep_}::"
-    s2 = f"use {dep_}"
-    s3 = f"extern crate {dep_}"
-
-    proc = subprocess.Popen(
-        f'rg "{s1}|{s2}|{s3}" {package}/src/', stdout=subprocess.PIPE
-    ).communicate()[0]
-
-    # print(proc)
-
-    if proc != b"":
-        results[dep] = True
-        return
-    results[dep] = False
-
-
-def fetch_packages() -> [str]:
-    packages = []
+def fetch_packages() -> List[str]:
+    packages: List[str] = []
     for item in os.listdir(".") + ["."]:
         if not os.path.isdir(os.path.join(".", item)):
             continue
 
-        is_package = False
-        for inner in os.listdir(item):
-            if not os.path.isfile(os.path.join(item, inner)):
-                continue
-
-            if inner.lower() != "cargo.toml":
-                continue
-            is_package = True
-
-            break
-        if not is_package:
-            continue
-
-        packages.append(item)
+        if any(inner.lower() == "cargo.toml" for inner in os.listdir(item) if os.path.isfile(os.path.join(item, inner))):
+            packages.append(item)
     return packages
 
 
-def check_globals(package_dependencies):
-    # Checks for unused global dependecy
-    threshold = 2
-
-    global_deps = []
-    specific_deps = []
+def check_globals(package_dependencies: List[Dependencies]) -> None:
+    # Checks for unused global dependency
+    global_deps: List[str] = []
+    specific_deps: List[str] = []
     for package in package_dependencies:
         if package.package == ".":
             global_deps += package.get_specifics()
         else:
             specific_deps += package.get_globals()
 
-    # print(global_deps, specific_deps)
-    unused = []
+    unused: List[str] = [gdep for gdep in global_deps if specific_deps.count(gdep) < 1]
 
-    for gdep in global_deps:
-        count = 0
-        for sdep in specific_deps:
-            if gdep == sdep:
-                count += 1
-        if count < threshold:
-            unused.append(gdep)
-
-    if len(unused) != 0:
-        print(
-            f"The global dependecies {unused} are used less than {threshold} package{'s'if threshold > 1 else ''}".replace(
-                "'", ""
-            )
-        )
+    if unused:
+        print(f"The global dependencies {unused} are used less than 1 package")
     else:
-        print(
-            f"Every global dependecy is used at least {threshold} time{'s'if threshold > 1 else ''}"
-        )
+        print("Every global dependency is used at least once")
 
 
-def find_conflicts(package_dependencies):
-    # conflicts = 0
-
+def find_conflicts(package_dependencies: List[Dependencies]) -> None:
     for i, dep1 in enumerate(package_dependencies):
         for j in range(i + 1, len(package_dependencies)):
-            dep2 = package_dependencies[j]
-            # print(f"Testing {dep1.package} against {dep2.package}")
+            dep2: Dependencies = package_dependencies[j]
             for d in dep1.get_specifics():
                 if d in dep2.get_specifics():
-                    print(f"Conlict of {d} in {dep1}-{dep2}")
-                    # conflicts += 1
-
-    # print(f"Found {conflicts} conflicts")
+                    print(f"Conflict of {d} in {dep1}-{dep2}")
 
 
-def check_unused(package_dependencies):
+def check_unused(package_dependencies: List[Dependencies]) -> None:
     # Check if a dependency imported by a package is used
 
-    threads = []
-    results = {}
+    processes: dict = {}
 
     for package_dep in package_dependencies:
         if package_dep.package == ".":
             continue
-        t, r = package_dep.check_unused()
 
-        threads += t
+        results: List[Tuple[str, subprocess.Popen]] = []
+        for dep in package_dep.get_all():
+            r_dep: str = dep.replace("-", "_")
 
-        results[package_dep.package] = r
+            pattern: str = f"{r_dep}::|use {r_dep}|extern crate {r_dep}"
 
-    for thread in threads:
-        thread.join()
+            process: subprocess.Popen = subprocess.Popen(
+                ["rg", pattern, os.path.join(package_dep.package, "src")],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
 
-    for i, (package, r) in enumerate(results.items()):
-        # Here we keep only entries where the result is not True (True means the dependency is used)
-        r = {key: val for key, val in r.items() if val != True}
-        if len(r) == 0:
-            continue
-        print()
-        for dep, used in r.items():
-            if used == True:
-                # print("Should not be happening")
-                continue
-            if used == None:
-                print(
-                    f"Diddn't receive any information about the dependency {dep} in {package}, this means that the thread has crashed"
-                )
-                continue
+            results.append((dep, process))
+
+        processes[package_dep.package] = results
+
+    for package, results in processes.items():
+        tag: bool = True
+        # iter over results, build a list of dep which processes returned nothing (bat found no trace of the dep name in the code)
+        for dep in {dep for dep, process in results if process.communicate()[0] == b''}:
+            if tag:
+                print()
+                tag = False
             print(f"Unused dep in {package}: {dep}")
 
 
-def main():
+def main() -> None:
 
     # Get all packages
-    packages = fetch_packages()
+    packages: List[str] = fetch_packages()
     print(packages, "\n")
 
     # Find all their dependencies
-    package_dependencies = [Dependencies(package) for package in packages]
+    package_dependencies: List[Dependencies] = [Dependencies(package) for package in packages]
 
     # Make sure that every global dep is used by a package
     check_globals(package_dependencies)
     print()
 
-    # Check if there are any conflict
+    # Check if there are any conflicts
     find_conflicts(package_dependencies)
 
     # Check if they are all used

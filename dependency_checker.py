@@ -1,15 +1,17 @@
 """.
-    Global dependency: the ones in root/cargo.toml
+    Global dependency: Crate imported with crate.workspace=true
+    Specific dependency: Crate imported using crate = "x.x.x" (or crate = {version ="x.x.x"})
 
-    Conflict: a global dependency that is also imported specifically by a package
 
     This script ensure that:
-        Every dependency used by 2 or more packages are a global dependencies
-        There is no unused global dependencies
-        Every dependency of every package is used at least once
+        1) Every global dependency used by at least GLOBAL_DEP_THRESHOLD package(s)
+        2) No global dependency is imported as specific dependency
+        3) Every dependency used by 2 or more packages is a global dependency (no double import which could be bad, I.E different versions)            
+        4) Every dependency of every package is used (no unused imports)
 
     Requirements:
         rg (https://github.com/BurntSushi/ripgrep)
+        a terminal that accepts ANSI codes
 
     Author: Bowarc
 """
@@ -19,16 +21,30 @@ import subprocess
 from typing import List, Tuple
 
 
+############
+## Config ##
+############
+GLOBAL_DEP_THRESHOLD: int = 2  # How many times a global dependency has to be used
+
+RED = "\033[0;31m"
+GREEN = "\033[0;32m"
+YELLOW = "\033[0;33m"
+RESET = "\033[0m"
+
+
 class Dependencies:
-    def __init__(self, package: str) -> None:
-        self.package: str = package
+    def __init__(self, path: str) -> None:
+        self.path: str = path
         self.specifics: List[str] = []
         self.globals: List[str] = []
 
         self.fetch()
 
     def __str__(self) -> str:
-        return "root" if self.package == "." else self.package
+        return self.name()
+
+    def name(self) -> str:
+        return "root" if self.path == "." else self.path
 
     def add_specific(self, dep_name: str) -> None:
         self.specifics.append(dep_name)
@@ -46,7 +62,7 @@ class Dependencies:
         return self.specifics + self.globals
 
     def fetch(self) -> None:
-        cargo_toml: str = os.path.join(self.package, "cargo.toml")
+        cargo_toml: str = os.path.join(self.path, "cargo.toml")
         try:
             with open(cargo_toml, "r") as f:
                 found_dependencies: bool = False
@@ -74,97 +90,150 @@ class Dependencies:
             print(f"Error reading {cargo_toml}: {e}")
 
 
-def fetch_packages() -> List[str]:
+def find_packages() -> List[str]:
     packages: List[str] = []
     for item in os.listdir(".") + ["."]:
         if not os.path.isdir(os.path.join(".", item)):
             continue
 
-        if any(inner.lower() == "cargo.toml" for inner in os.listdir(item) if os.path.isfile(os.path.join(item, inner))):
+        if any(
+            inner.lower() == "cargo.toml"
+            for inner in os.listdir(item)
+            if os.path.isfile(os.path.join(item, inner))
+        ):
             packages.append(item)
     return packages
 
 
-def check_globals(package_dependencies: List[Dependencies]) -> None:
+def rule1(package_dependencies: List[Dependencies]) -> None:
     # Checks for unused global dependency
     global_deps: List[str] = []
     specific_deps: List[str] = []
     for package in package_dependencies:
-        if package.package == ".":
+        if package.path == ".":
             global_deps += package.get_specifics()
         else:
             specific_deps += package.get_globals()
 
-    unused: List[str] = [gdep for gdep in global_deps if specific_deps.count(gdep) < 1]
+    unused: List[str] = [
+        gdep for gdep in global_deps if specific_deps.count(gdep) < GLOBAL_DEP_THRESHOLD
+    ]
 
     if unused:
-        print(f"The global dependencies {unused} are used less than 1 package")
+        print(
+            f"{YELLOW}(Rule 1){RESET} The global dependencies {unused} are used less than {GLOBAL_DEP_THRESHOLD} package{'s'if GLOBAL_DEP_THRESHOLD > 1 else ''}".replace(
+                "'", ""
+            )
+        )
     else:
-        print("Every global dependency is used at least once")
+        print(f"{GREEN}(Rule 1){RESET} Every global dependency is used at least {GLOBAL_DEP_THRESHOLD} time{'s'if GLOBAL_DEP_THRESHOLD > 1 else ''}")
 
 
-def find_conflicts(package_dependencies: List[Dependencies]) -> None:
-    for i, dep1 in enumerate(package_dependencies):
-        for j in range(i + 1, len(package_dependencies)):
-            dep2: Dependencies = package_dependencies[j]
-            for d in dep1.get_specifics():
-                if d in dep2.get_specifics():
-                    print(f"Conflict of {d} in {dep1}-{dep2}")
+def rule2(package_dependencies: List[Dependencies]) -> None:
+    # Global dependency imported as specific
+    global_deps = None
+
+    good: bool = True
+
+    try:
+        global_deps = [
+            package_dep for package_dep in package_dependencies if package_dep.path == "."][0]
+    except Exception as e:
+        print(f"{RED}(Rule 2){RESET} No global package found")
+        return
+
+    for dependency in global_deps.get_specifics():
+        # package.path check before to dodge list comparison on root
+        for package in [package for package in package_dependencies if package.path != "." and dependency in package.get_specifics()]:
+            print(f"{YELLOW}(Rule 2){RESET} Global dependency {dependency} is imported as specific in {package}")
+            # I wonder if reads are faster than writes (is it worth to check if !good before writing ?)
+            good = False
+    if good:
+        print(f"{GREEN}(Rule 2){RESET} No global dependency is imported as specific")
 
 
-def check_unused(package_dependencies: List[Dependencies]) -> None:
-    # Check if a dependency imported by a package is used
+def rule3(package_dependencies: List[Dependencies]) -> None:
+    seen_dependencies: dict = {}
+    good = True
 
+    for package in package_dependencies:
+        for dependency in package.get_specifics():
+            if dependency in seen_dependencies:
+                seen_packages = seen_dependencies[dependency]
+                seen_packages.append(package.name())
+                print(f"{YELLOW}(Rule 3){RESET} Packages {seen_packages[0]} and {package.name()} both use {dependency}")
+                good = False
+            else:
+                seen_dependencies[dependency] = [package.name()]
+
+    if good:
+        print(f"{GREEN}(Rule 3){RESET} Every specific is justified")
+
+
+def rule4(package_dependencies: List[Dependencies]) -> None:
+    # Unused imports
     processes: dict = {}
+    good: bool = True
 
-    for package_dep in package_dependencies:
-        if package_dep.package == ".":
+    for package in package_dependencies:
+        if package.path == ".":
             continue
 
         results: List[Tuple[str, subprocess.Popen]] = []
-        for dep in package_dep.get_all():
+        for dep in package.get_all():
             r_dep: str = dep.replace("-", "_")
 
             pattern: str = f"{r_dep}::|use {r_dep}|extern crate {r_dep}"
 
             process: subprocess.Popen = subprocess.Popen(
-                ["rg", pattern, os.path.join(package_dep.package, "src")],
+                # removed os.path.join(package.path, "src") to fix build.rs not being checked
+                ["rg", pattern, f"{package.path}/"],
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
             )
 
             results.append((dep, process))
 
-        processes[package_dep.package] = results
+        processes[package.name()] = results
 
     for package, results in processes.items():
         tag: bool = True
         # iter over results, build a list of dep which processes returned nothing (bat found no trace of the dep name in the code)
-        for dep in {dep for dep, process in results if process.communicate()[0] == b''}:
+        for dep in {dep for dep, process in results if process.communicate()[0] == b""}:
             if tag:
                 print()
                 tag = False
-            print(f"Unused dep in {package}: {dep}")
+            print(f"{YELLOW}(Rule 4){RESET} Unused dependency in {package}: {dep}")
+            good = False
+
+    if good:
+        print(f"\n{GREEN}(Rule 4){RESET} No unused dependencies")
 
 
 def main() -> None:
 
     # Get all packages
-    packages: List[str] = fetch_packages()
+    packages: List[str] = find_packages()
     print(packages, "\n")
 
     # Find all their dependencies
-    package_dependencies: List[Dependencies] = [Dependencies(package) for package in packages]
+    package_dependencies: List[Dependencies] = [
+        Dependencies(package) for package in packages
+    ]
 
     # Make sure that every global dep is used by a package
-    check_globals(package_dependencies)
+    rule1(package_dependencies)
     print()
 
-    # Check if there are any conflicts
-    find_conflicts(package_dependencies)
+    # Make sure that no global is also imported as specific
+    rule2(package_dependencies)
+    print()
 
-    # Check if they are all used
-    check_unused(package_dependencies),
+    # Verify that no package share specifc dependencies
+    rule3(package_dependencies)
+
+    # Check if all imports are used
+    rule4(package_dependencies)
 
 
 if __name__ == "__main__":

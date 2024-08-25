@@ -80,7 +80,7 @@ class Dependencies:
                         continue
 
                     raw_dep_name: str = line.split(".")[0].split("=")[0]
-                    if ".workspace=true" in line:
+                    if "workspace=true" in line:
                         self.add_global(raw_dep_name)
                     else:
                         self.add_specific(raw_dep_name)

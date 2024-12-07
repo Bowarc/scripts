@@ -215,7 +215,7 @@ def rule4(package_dependencies: List[Dependencies]) -> None:
 
     for package, results in processes.items():
         tag: bool = True
-        # iter over results, build a list of dep which processes returned nothing (bat found no trace of the dep name in the code)
+        # iter over results, build a list of dep which processes returned nothing (rg found no trace of the dep name in the code)
         for dep in {dep for dep, process in results if process.communicate()[0] == b""}:
             if tag:
                 print()

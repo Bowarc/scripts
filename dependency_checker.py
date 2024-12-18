@@ -63,7 +63,7 @@ class Dependencies:
         return self.specifics + self.globals
 
     def fetch(self) -> None:
-        cargo_toml: str = os.path.join(self.path, "cargo.toml")
+        cargo_toml: str = os.path.join(self.path, "Cargo.toml")
         try:
             with open(cargo_toml, "r") as f:
                 found_dependencies: bool = False

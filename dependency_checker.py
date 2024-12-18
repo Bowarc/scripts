@@ -101,7 +101,7 @@ def find_packages() -> List[str]:
             continue
 
         if any(
-            inner.lower() == "cargo.toml"
+            inner.lower() == "Cargo.toml"
             for inner in os.listdir(item)
             if os.path.isfile(os.path.join(item, inner))
         ):
